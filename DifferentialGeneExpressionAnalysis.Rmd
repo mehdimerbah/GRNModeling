@@ -1,0 +1,244 @@
+---
+title: "DifferentialGeneExpressionAnalysis"
+author: "Mehdi Merbah"
+output: html_document
+---
+
+```{r echo=TRUE, setup, results='hide'}
+#knitr::opts_knit$set(echo = TRUE, root.dir = '/home/mehdimerbah/R Projects/RNASeqDA/data')
+suppressWarnings(library(DESeq2))
+suppressWarnings(library(enrichR))
+suppressWarnings(library(ggplot2))
+```
+
+## Information about the Data
+
+The data was fetched from the CGGA (Chinese Glioma Genome Atlas). The sample collection methods and details regarding the sequencing platforms and protocols used can be found on The CGGA Website. [NOTE: Hyperlink Website]
+The Dataset used is for 325 patients diagnosed with different grades of Glioma as classified by the WHO standards (Grade II, Grade III, Grade IV). The data was obtained from RNA-seq experiments on Illumina platforms and is presented as gene count estimates. The gene count estimates were generated using STAR + RSEM (RNA-seq with Expectation Maximization). 
+
+## RSEM
+https://bmcbioinformatics.biomedcentral.com/articles/10.1186/1471-2105-12-323
+## Raw vs Expected Count Estimates
+
+The problem with using raw read counts is that the origin of some reads cannot always be uniquely determined. If two or more distinct transcripts in a particular sample share some common sequence (for example, if they are alternatively spliced mRNAs or mRNAs derived from paralogous genes), then sequence alignment may not be sufficient to discriminate the true origin of reads mapping to these transcripts. One approach to addressing this issue involves discarding these multiple-mapped reads (multireads for short) entirely. Another involves partitioning and distributing portions of a multiread’s expression value between all of the transcripts to which it maps. So-called “rescue” methods implement this second approach in a naive fashion. RSEM improves upon this approach, utilizing an Expectation-Maximization (EM) algorithm to estimate maximum likelihood expression levels. These “expected counts” can then be provided as a matrix (rows = mRNAs, columns = samples) to programs such as EBSeq, DESeq, or edgeR to identify differentially expressed genes.
+https://biowize.wordpress.com/2014/03/04/understanding-rsem-raw-read-counts-vs-expected-counts/
+
+
+## DESeq2 with RSEM Estimates Matrix
+The typical procedure is to import the RSEM output that includes information about the different gene isoforms obtained from multiple transcripts using the protocol described in the DESeq2 documentation for dealing with gene-level count estimates. The protocol uses the 'tximport' package and takes care of pre-processing the data for import into a DESeq2 object, which can then be used to do the DEA. The issue here is that we only have the gene-level count estimates matrix with no additional information, so we do not have the entirety of RSEM output. This issue was raised before and the advised solution was to typically round the count estimates to integer values and then construct the DESeq2 object from the count matrix and run the downstream analysis as usual.
+
+### Threads for RSEM estimates Data-import
+https://support.bioconductor.org/p/94003/#94028
+https://www.biostars.org/p/320594/
+https://support.bioconductor.org/p/94003/#94028
+
+
+
+
+## Data import and Wrangling
+```{r}
+setwd('/home/mehdimerbah/R Projects/RNASeqDA/data')
+disease_raw_data <- read.table("CGGA_mRNAseq_325_RSEM_genes.txt",head=T,row.names = 1)
+disease_raw_data[1:5, 1:5]
+```
+
+```{r}
+setwd('/home/mehdimerbah/R Projects/RNASeqDA/data')
+metadata <- read.table("CGGA_mRNAseq_325_clinical.txt", sep ="\t", head=T,row.names = 1)
+meta <- metadata[order(row.names(metadata)),]
+raw <- disease_raw_data[,order(colnames(disease_raw_data))]
+NAs <- rownames(meta[is.na(meta$Grade),])
+meta <- meta[!rownames(meta)%in%NAs, ]
+raw <- raw[ ,!colnames(raw)%in%NAs]
+meta$Grade <- as.factor(meta$Grade)
+rounded <- round(raw)
+rounded[1:10,1:5]
+```
+
+## EDA
+
+### Distribution of the Grades
+```{r}
+#png("grade_distribution.png")
+theme_update(plot.title = element_text(hjust = 0.5))
+ggplot(meta, aes(x= Grade, fill=Histology)) + geom_bar() +ggtitle("Grade Distribution Across all Patients")
+```
+
+### PCA
+```{r}
+pca <- prcomp(t(rounded))
+
+percentVar <- round(100*pca$sdev^2/sum(pca$sdev^2),1)
+
+sd_ratio <- sqrt(percentVar[2] / percentVar[1])
+
+pca_data <- data.frame(Sample = rownames(pca$x), PC1 = pca$x[,1], PC2 = pca$x[,2], Grade = meta$Grade)
+
+ggplot(pca_data, aes(x = PC1, y = PC2, label = Sample))+ geom_point(aes(colour = Grade)) + #geom_text()+
+  ggtitle("PCA of Gene-level Count Estimates") +
+  xlab(paste0("PC1, VarExp: ", percentVar[1], "%")) +
+  ylab(paste0("PC2, VarExp: ", percentVar[2], "%")) +
+  theme_bw() + theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+
+## Differantial Expression Analysis 
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = rounded, colData = meta, design = ~ Grade)
+res <- DESeq(dds)
+expRes_4v2 <- results(res)
+head(expRes_4v2[order(expRes_4v2$padj),], 10)
+write.csv(as.data.frame(expRes_4v2[order(expRes_4v2$padj),]), file="DEGs_4v2.csv")
+```
+
+```{r}
+DESeq2::plotDispEsts(res)
+plotMA(expRes_4v2, ylim=c(-4,4))
+```
+
+```{r Volcano}
+log2FoldChange<- expRes_4v2$log2FoldChange
+padj<- expRes_4v2$padj
+pvalue<- expRes_4v2$pvalue
+alpha <- 0.05 # Threshold on the adjusted p-value
+cols <- densCols(log2FoldChange, -log10(padj))
+plot(log2FoldChange, -log10(padj), col=cols, panel.first=grid(),
+     main="Volcano plot", xlab="Effect size: log2(fold-change)", ylab="-log10(adjusted p-value)",
+     pch=20, cex=0.6)
+abline(v=0)
+abline(v=c(-2,2), col="brown")
+abline(h=-log10(alpha), col="brown")
+
+filtered <- abs(log2FoldChange) > 2 & padj < alpha 
+text(log2FoldChange[filtered],
+     -log10(padj)[filtered],
+     lab=rownames(res)[filtered], cex=0.4)
+```
+
+
+### Extracting Results For Grade Comparisons
+```{r}
+## Filtering Expression results Grades: 4 vs 2
+filtered_4v2 <- subset(expRes_4v2, padj<0.05 & abs(log2FoldChange)>2)
+gene_list_4v2 <- rownames(filtered_4v2)
+
+
+## Extracting Expression results Grades: 4 vs 3
+expRes_4v3 <- results(res, contrast = c("Grade","WHO.IV", "WHO.III"))
+#head(expRes_4v3[order(expRes_4v3$padj),], 10)
+write.csv(as.data.frame(expRes_4v3[order(expRes_4v3$padj),]), file="DEGs_4v3.csv")
+filtered_4v3 <- subset(expRes_4v3, expRes_4v3$padj<0.05 & abs(expRes_4v3$log2FoldChange)>2)
+gene_list_4v3 <- rownames(filtered_4v3)
+
+## Extracting Expression results Grades: 3 vs 2
+expRes_3v2 <- results(res, contrast = c("Grade","WHO III", "WHO II"))
+#head(expRes_3v2[order(expRes_3v2$padj),], 10)
+write.csv(as.data.frame(expRes_3v2[order(expRes_3v2$padj),]), file="DEGs_3v2.csv")
+filtered_3v2 <- subset(expRes_3v2, expRes_3v2$padj<0.05 & abs(expRes_3v2$log2FoldChange)>2)
+gene_list_3v2 <- rownames(filtered_3v2)
+```
+### Number of Diff Expressed Genes
+
+```{r}
+#length(gene_list_4v2)
+#length(gene_list_3v2)
+#length(gene_list_4v3)
+
+# Common genes between 4V2 and 4V3
+common_genes_4v2and4v3 <- intersect(gene_list_4v2, gene_list_4v3)
+# Common genes between 3V2 and 4V3
+common_genes_3v2and4v3 <- intersect(gene_list_3v2, gene_list_4v3)
+# Common genes between 3V2 and 4V2
+common_genes_4v2and3v2 <- intersect(gene_list_4v2, gene_list_3v2)
+# Common genes between all grades
+common_genes <- intersect(common_genes_3v2and4v3, common_genes_4v2and3v2)
+
+genes_3v2_excluding_intersection <- setdiff(gene_list_3v2, gene_list_4v2)
+
+genes_3v2and4v2_excluding_intersection <- setdiff(common_genes_4v2and3v2, gene_list_4v3)
+
+genes_4v2_excluding_intersect <- setdiff(setdiff(gene_list_4v2, common_genes_4v2and3v2), gene_list_4v3)
+
+
+sprintf("4v2 Exclusive: %d", length(genes_4v2_excluding_intersect))
+sprintf("3v2 and 4v2 Exclusive: %d", length(genes_3v2and4v2_excluding_intersection))
+
+
+length(common_genes_4v2and3v2)
+length(common_genes_3v2and4v3)
+length(common_genes_4v2and4v3)
+
+#common_genes_4v2and3v2
+#common_genes_3v2and4v3
+#common_genes_4v2and4v3
+
+
+length(common_genes)
+common_genes
+
+library(VennDiagram)
+
+venn.diagram(
+  x = list(gene_list_4v2, gene_list_3v2, gene_list_4v3),
+  category.names = c("4v2" , "3v2" , "4v3"),
+  filename = 'Grade_venn_diagramm.png',
+  output=TRUE
+)
+```
+
+
+
+## DEA Without 761 
+
+Removing the CGGA_761 sample and restructuring the Datasets
+```{r}
+rounded_No761 <- rounded[, !(names(rounded) %in% "CGGA_761")]
+dim(rounded_No761)
+dim(rounded)
+meta_No761 <- meta[!(names(rounded) %in% "CGGA_761"), ]
+dim(meta_No761)
+dim(meta)
+```
+
+Now we can run the Diff Expression analysis on the new Datasets
+```{r}
+dds_No761 <- DESeqDataSetFromMatrix(countData = rounded_No761, colData = meta_No761, design = ~ Grade)
+res_No761 <- DESeq(dds_No761)
+expRes_No761<- results(res_No761)
+head(expRes_No761[order(expRes_No761$padj),], 10)
+filtered_No761 <- subset(expRes_No761, expRes_No761$padj<0.05 & abs(expRes_No761$log2FoldChange)>1)
+dim(filtered_No761)
+gene_list_No761 <- rownames(filtered_No761)
+```
+
+```{r}
+length(gene_list_4v2)
+length(gene_list_No761)
+# The following should find the conjunction of the two gene_list sets
+length(intersect(gene_list_4v2, gene_list_No761))
+# check which genes are not common
+list_uncommon <- setdiff(union(gene_list_4v2, gene_list_No761), intersect(gene_list_4v2, gene_list_No761))
+```
+
+
+There does not seem to be a great difference between the results with and without the CGGA_761 sample
+
+### Plotting the results
+```{r}
+cols <- densCols(expRes_No761$log2FoldChange, -log10(expRes_No761$padj))
+plot(expRes_No761$log2FoldChange, -log10(expRes_No761$padj), col=cols, panel.first=grid(),
+     main="Volcano plot", xlab="Effect size: log2(fold-change)", ylab="-log10(adjusted p-value)",
+     pch=20, cex=0.6)
+abline(v=0)
+abline(v=c(-2,2), col="brown")
+abline(h=-log10(alpha), col="brown")
+
+filtered <- abs(expRes_No761$log2FoldChange) > 2 & expRes_No761$padj < alpha 
+text(expRes_No761$log2FoldChange[filtered],
+     -log10(expRes_No761$padj)[filtered],
+     lab=rownames(res_No761)[filtered], cex=0.4)
+```
+

@@ -1,0 +1,116 @@
+---
+title: "PathwayAnalysis"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Loading Packages
+```{r}
+library(pathview)
+library(gage)
+#library(gageData)
+suppressWarnings(library(enrichR))
+suppressWarnings(library(ggplot2))
+```
+
+
+## Gene Set Enrichment Analysis
+
+        The following is GSEA performed using the enrichR package focused on 6 databases:GO Bio. Processes/Molecular Functions, KEGG, Reactome, Wiki Pathways and Elsevier Pathways. The goal is to see if there are any common pathways or biological functions/processes between the differentially expressed genes from the DEA of different grade contrasts. 
+
+        We first construct the enrichment sets with enrichR and plot them for every grade comparison.
+```{r}
+# Geneset enrichment with enrichR
+dbs <- c("Reactome_2016", "KEGG_2021_Human", "WikiPathway_2021_Human", "Elsevier_Pathway_Collection")
+enriched_4v2 <- enrichr(gene_list_4v2, dbs)
+enriched_4v3 <- enrichr(gene_list_4v3, dbs)
+enriched_3v2 <- enrichr(gene_list_3v2, dbs)
+enriched_common <- enrichr(common_genes, dbs)
+
+```
+### Common Genes GSEA
+```{r}
+plotEnrich(enriched_common[[4]], title= "Enrichment Common Genes")
+head(enriched_common[[4]][c("Term","P.value","Genes")], 10)
+```
+
+### Grades 2v3
+
+```{r}
+plotEnrich(enriched_3v2[[1]], title= "Enrichment 3 vs 2")
+```
+
+
+### Grades 4v2
+```{r}
+plotEnrich(enriched_4v2[[4]], title= "Enrichment 4 vs 2")
+head(enriched_4v2[[4]][c("Term","P.value","Genes")], 10)
+```
+
+
+### Grades 4v3
+
+```{r}
+plotEnrich(enriched_4v3[[1]], title= "Enrichment 4 vs 3")
+```
+
+
+
+### Unique Genes in Grades intersects
+#### 4V2
+```{r}
+enriched_4v2_exclusive <- enrichr(genes_4v2_excluding_intersect, dbs)
+plotEnrich(enriched_4v2_exclusive[[4]], title= "Enrichment 4 vs 2 Exclusive")
+```
+
+
+#### 3v2 and 4v2 excluding common to all
+
+```{r}
+enriched_4v2_exclusive <- enrichr(genes_3v2and4v2_excluding_intersection, dbs)
+plotEnrich(enriched_4v2_exclusive[[4]], title= "Enrichment 4v2 and 3v2 Exclusive")
+```
+
+
+##ID MAPPING
+```{r}
+library(org.Hs.eg.db)
+hommo_sapiens <- org.Hs.eg.db
+common_genes_entrezIDs <- select(hs, 
+       keys = common_genes,
+       columns = c("ENTREZID", "SYMBOL"),
+       keytype = "SYMBOL")
+
+common_genes_entrezIDs
+
+grade4v2_entrezIDs <- select(hs, 
+       keys = gene_list_4v2,
+       columns = c("ENTREZID", "SYMBOL"),
+       keytype = "SYMBOL")
+grade4v2_entrezIDs <- na.omit(grade4v2_entrezIDs)
+grade4v2_entrezIDs
+```
+
+
+##KEGG
+
+```{r}
+kegg_enriched <- enriched_common[3]
+KEGG_IDs <- mget(as.character(common_genes_entrezIDs$ENTREZID), org.Hs.egPATH, ifnotfound = NA)
+kegg_IDs_4v2 <- mget(as.character(grade4v2_entrezIDs$ENTREZID), org.Hs.egPATH, ifnotfound = NA)
+```
+
+## Reactome
+```{r}
+reactomeEnriched_4v2 <- ReactomePA::enrichPathway(grade4v2_entrezIDs$ENTREZID,  readable = TRUE)
+reactomeEnriched_common <- ReactomePA::enrichPathway(common_genes_entrezIDs$ENTREZID, readable = TRUE)
+head(reactomeEnriched_4v2[,c("Description","geneID")], 40)
+head(reactomeEnriched_common[,c("Description","geneID")])
+#ReactomePA::viewPathway("Signaling by Interleukins", readable = TRUE)
+```
+

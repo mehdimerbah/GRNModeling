@@ -1,0 +1,171 @@
+---
+title: "NetworkConstruction"
+author: "Mehdi Merbah"
+date: "4/8/2021"
+output: html_document
+---
+
+```{r setup, results='hide'}
+#knitr::opts_chunk$set(echo = TRUE)
+library(GENIE3)
+library(WGCNA)
+library(igraph)
+library(print)
+#library(Rgraphviz)
+```
+
+
+
+## GENIE3
+
+### Extracting Regulatory Realtionships
+```{r eval=FALSE, include=FALSE}
+network_matrix <- rounded[common_genes,]
+weight_matrix <- GENIE3(as.matrix(network_matrix))
+weight_matrix[1:5,1:5]
+gene_link_list <- getLinkList(weight_matrix, threshold = 0.05)
+gene_link_list
+reg_genes <- gene_link_list$regulatoryGene
+```
+
+```{r}
+stand_alone_DE <- subset(expRes_4v2, padj<0.05 & abs(log2FoldChange)>2.5)
+stand_alone_gene_list <- rownames(stand_alone_DE)
+length(stand_alone_gene_list)
+test_network_matrix <- rounded[stand_alone_gene_list,]
+test_weight_matrix <- GENIE3(as.matrix(test_network_matrix))
+test_weight_matrix[20:25,21:25]
+test_gene_link_list <- getLinkList(test_weight_matrix, threshold = 0.05)
+test_gene_link_list
+
+```
+```{r}
+test_weight_matrix[20:25,21:25]
+print(xtable(test_weight_matrix, type = "latex"), file = "weights.tex")
+```
+
+
+### Network Visualization
+```{r echo=TRUE}
+graph_data <- graph.data.frame(test_gene_link_list, directed = F)
+adj_list <- get.adjacency(graph_data, sparse = T, attr = "weight", type = "both")
+
+adj_graph <- graph.adjacency(adj_list, mode = "undirected", weighted = T)
+
+#graph.isomorphic(g, g_arasi)
+png("network.png", units="in", width=5, height=5, res=300)
+
+plot(adj_graph, vertex.color="grey", vertex.size=12, vertex.frame.color="grey", vertex.label.family="Arial", vertex.label.color="black", vertex.label.cex=0.2, vertex.label.dist=0, vertex.label.font=1.5, edge.curved=0.2, edge.color="red")
+#dev.off()
+```
+
+
+
+
+## WGCNA
+
+Loading the modules and setting up the environement  
+```{r}
+library(WGCNA)
+options(stringsAsFactors =  FALSE)
+enableWGCNAThreads()
+```
+
+Constructing a weighted gene network necessitates the choice of a thresholding power \beta that we raise the co-expression similarity to infer the adjacency. The authors of the original WGCGNA paper suggested to use this power based on the criterion of (approximate scale-free topology ?)  
+
+```{r}
+# First we pick soft thresholding powers
+powers <- c(seq(1,10,by=1), seq(12,20, by=2))
+# Network topology analysis function
+sft <- pickSoftThreshold(network_matrix, powerVector= powers, verbose = 5)
+sizeGrWindow(9, 5)
+par(mfrow = c(1,2));
+cex1 = 0.9;
+plot(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+main = paste("Scale independence"));
+text(sft$fitIndices[,1], -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+labels=powers,cex=cex1,col="red");
+# this line corresponds to using an R^2 cut-off of h
+abline(h=0.90,col="red")
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], sft$fitIndices[,5],
+xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], sft$fitIndices[,5], labels=powers, cex=cex1,col="red")
+
+```
+
+```{r}
+softPower = 6
+adjacency_mat <- adjacency(t(network_matrix), power = softPower)
+TOM = TOMsimilarity(adjacency_mat);
+dissTOM = 1 - TOM
+
+# Call the hierarchical clustering function
+geneTree = hclust(as.dist(dissTOM), method = "average");
+# Plot the resulting clustering tree (dendrogram)
+sizeGrWindow(12,9)
+plot(geneTree, xlab="", sub="", main = "Gene clustering on TOM-based dissimilarity",labels = FALSE, hang = 0.04)
+```
+
+
+```{r}
+minModuleSize = 20;
+# Module identification using dynamic tree cut:
+dynamicMods = cutreeDynamic(dendro = geneTree, distM = dissTOM, deepSplit = 2, pamRespectsDendro = FALSE, minClusterSize = minModuleSize);
+table(dynamicMods) 
+
+```
+
+```{r}
+dynamicColors = labels2colors(dynamicMods)
+table(dynamicColors)
+# Plot the dendrogram and colors underneath
+sizeGrWindow(8,6)
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05,
+main = "Gene dendrogram and module colors")
+
+# Calculate eigengenes
+MEList = moduleEigengenes(t(network_matrix), colors = dynamicColors)
+MEs = MEList$eigengenes
+# Calculate dissimilarity of module eigengenes
+MEDiss = 1-cor(MEs);
+# Cluster module eigengenes
+METree = hclust(as.dist(MEDiss), method = "average");
+# Plot the result
+sizeGrWindow(7, 6)
+plot(METree, main = "Clustering of module eigengenes",
+xlab = "", sub = "")
+MEDissThres = 0.25
+# Plot the cut line into the dendrogram
+abline(h=MEDissThres, col = "red")
+# Call an automatic merging function
+merge = mergeCloseModules(t(network_matrix), dynamicColors, cutHeight = MEDissThres, verbose = 3)
+# The merged module colors
+mergedColors = merge$colors;
+# Eigengenes of the new merged modules:
+mergedMEs = merge$newMEs;
+```
+
+```{r}
+sizeGrWindow(12, 9)
+#pdf(file = "Plots/geneDendro-3.pdf", wi = 9, he = 6)
+plotDendroAndColors(geneTree, cbind(dynamicColors, mergedColors),
+c("Dynamic Tree Cut", "Merged dynamic"),
+dendroLabels = FALSE, hang = 0.03,
+addGuide = TRUE, guideHang = 0.05)
+```
+
+
+
+## Mutual Information
+
+
+
+
+
+
+
